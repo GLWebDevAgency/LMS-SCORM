@@ -20,6 +20,7 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, count, sql } from "drizzle-orm";
+import { cacheService } from "./services/cacheService";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -135,8 +136,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTenant(id: string): Promise<Tenant | undefined> {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, id));
-    return tenant;
+    return cacheService.wrap(
+      `tenant:${id}`,
+      async () => {
+        const [tenant] = await db.select().from(tenants).where(eq(tenants.id, id));
+        return tenant;
+      },
+      3600 // 1 hour - tenants rarely change
+    );
   }
 
   async createTenant(tenant: InsertTenant): Promise<Tenant> {
@@ -150,11 +157,18 @@ export class DatabaseStorage implements IStorage {
       .set({ ...tenant, updatedAt: new Date() })
       .where(eq(tenants.id, id))
       .returning();
+    
+    // Invalidate cache
+    await cacheService.delete(`tenant:${id}`);
+    
     return updatedTenant;
   }
 
   async deleteTenant(id: string): Promise<void> {
     await db.delete(tenants).where(eq(tenants.id, id));
+    
+    // Invalidate cache
+    await cacheService.delete(`tenant:${id}`);
   }
 
   // Course operations
@@ -179,12 +193,24 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCourse(id: string): Promise<Course | undefined> {
-    const [course] = await db.select().from(courses).where(eq(courses.id, id));
-    return course;
+    return cacheService.wrap(
+      `course:${id}`,
+      async () => {
+        const [course] = await db.select().from(courses).where(eq(courses.id, id));
+        return course;
+      },
+      600 // 10 minutes - courses change moderately
+    );
   }
 
   async createCourse(course: InsertCourse): Promise<Course> {
     const [newCourse] = await db.insert(courses).values(course).returning();
+    
+    // Invalidate tenant's course list cache
+    if (course.tenantId) {
+      await cacheService.deletePattern(`courses:list:${course.tenantId}*`);
+    }
+    
     return newCourse;
   }
 
@@ -194,11 +220,27 @@ export class DatabaseStorage implements IStorage {
       .set({ ...course, updatedAt: new Date() })
       .where(eq(courses.id, id))
       .returning();
+    
+    // Invalidate cache
+    await cacheService.delete(`course:${id}`);
+    if (updatedCourse.tenantId) {
+      await cacheService.deletePattern(`courses:list:${updatedCourse.tenantId}*`);
+    }
+    
     return updatedCourse;
   }
 
   async deleteCourse(id: string): Promise<void> {
+    // Get course first to invalidate tenant cache
+    const course = await this.getCourse(id);
+    
     await db.delete(courses).where(eq(courses.id, id));
+    
+    // Invalidate cache
+    await cacheService.delete(`course:${id}`);
+    if (course?.tenantId) {
+      await cacheService.deletePattern(`courses:list:${course.tenantId}*`);
+    }
   }
 
   async softDeleteCourse(id: string): Promise<Course> {
@@ -256,12 +298,25 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getDispatch(id: string): Promise<Dispatch | undefined> {
-    const [dispatch] = await db.select().from(dispatches).where(eq(dispatches.id, id));
-    return dispatch;
+    return cacheService.wrap(
+      `dispatch:${id}`,
+      async () => {
+        const [dispatch] = await db.select().from(dispatches).where(eq(dispatches.id, id));
+        return dispatch;
+      },
+      300 // 5 minutes - dispatches change more frequently
+    );
   }
 
   async createDispatch(dispatch: InsertDispatch): Promise<Dispatch> {
     const [newDispatch] = await db.insert(dispatches).values(dispatch).returning();
+    
+    // Invalidate related caches
+    if (newDispatch.tenantId) {
+      await cacheService.deletePattern(`dispatches:list:${newDispatch.tenantId}*`);
+      await cacheService.deletePattern(`dashboard:stats:${newDispatch.tenantId}*`);
+    }
+    
     return newDispatch;
   }
 
@@ -271,6 +326,14 @@ export class DatabaseStorage implements IStorage {
       .set({ ...dispatch, updatedAt: new Date() })
       .where(eq(dispatches.id, id))
       .returning();
+    
+    // Invalidate cache
+    await cacheService.delete(`dispatch:${id}`);
+    if (updatedDispatch.tenantId) {
+      await cacheService.deletePattern(`dispatches:list:${updatedDispatch.tenantId}*`);
+      await cacheService.deletePattern(`dashboard:stats:${updatedDispatch.tenantId}*`);
+    }
+    
     return updatedDispatch;
   }
 
@@ -357,40 +420,48 @@ export class DatabaseStorage implements IStorage {
     totalLaunches: number;
     completionRate: number;
   }> {
-    // Build queries with proper conditional logic
-    const courseQuery = tenantId 
-      ? db.select({ count: count() }).from(courses).where(eq(courses.tenantId, tenantId))
-      : db.select({ count: count() }).from(courses);
+    const cacheKey = tenantId ? `dashboard:stats:${tenantId}` : 'dashboard:stats:global';
     
-    const dispatchQuery = tenantId
-      ? db.select({ count: count() }).from(dispatches).where(and(eq(dispatches.tenantId, tenantId), eq(dispatches.status, 'active'), eq(dispatches.isDisabled, false)))
-      : db.select({ count: count() }).from(dispatches).where(and(eq(dispatches.status, 'active'), eq(dispatches.isDisabled, false)));
-    
-    const launchQuery = tenantId
-      ? db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE tenant_id = ${tenantId} AND is_disabled = false) AND launched_at IS NOT NULL`)
-      : db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE is_disabled = false) AND launched_at IS NOT NULL`);
-    
-    const completionQuery = tenantId
-      ? db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE tenant_id = ${tenantId} AND is_disabled = false) AND completed_at IS NOT NULL`)
-      : db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE is_disabled = false) AND completed_at IS NOT NULL`);
+    return cacheService.wrap(
+      cacheKey,
+      async () => {
+        // Build queries with proper conditional logic
+        const courseQuery = tenantId 
+          ? db.select({ count: count() }).from(courses).where(eq(courses.tenantId, tenantId))
+          : db.select({ count: count() }).from(courses);
+        
+        const dispatchQuery = tenantId
+          ? db.select({ count: count() }).from(dispatches).where(and(eq(dispatches.tenantId, tenantId), eq(dispatches.status, 'active'), eq(dispatches.isDisabled, false)))
+          : db.select({ count: count() }).from(dispatches).where(and(eq(dispatches.status, 'active'), eq(dispatches.isDisabled, false)));
+        
+        const launchQuery = tenantId
+          ? db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE tenant_id = ${tenantId} AND is_disabled = false) AND launched_at IS NOT NULL`)
+          : db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE is_disabled = false) AND launched_at IS NOT NULL`);
+        
+        const completionQuery = tenantId
+          ? db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE tenant_id = ${tenantId} AND is_disabled = false) AND completed_at IS NOT NULL`)
+          : db.select({ count: count() }).from(dispatchUsers).where(sql`dispatch_id IN (SELECT id FROM dispatches WHERE is_disabled = false) AND completed_at IS NOT NULL`);
 
-    const [courseCount, dispatchCount, launchCount, completionCount] = await Promise.all([
-      courseQuery,
-      dispatchQuery,
-      launchQuery,
-      completionQuery,
-    ]);
+        const [courseCount, dispatchCount, launchCount, completionCount] = await Promise.all([
+          courseQuery,
+          dispatchQuery,
+          launchQuery,
+          completionQuery,
+        ]);
 
-    const totalLaunches = launchCount[0].count;
-    const totalCompletions = completionCount[0].count;
-    const completionRate = totalLaunches > 0 ? (totalCompletions / totalLaunches) * 100 : 0;
+        const totalLaunches = launchCount[0].count;
+        const totalCompletions = completionCount[0].count;
+        const completionRate = totalLaunches > 0 ? (totalCompletions / totalLaunches) * 100 : 0;
 
-    return {
-      totalCourses: courseCount[0].count,
-      activeDispatches: dispatchCount[0].count,
-      totalLaunches: totalLaunches,
-      completionRate: Math.round(completionRate * 10) / 10,
-    };
+        return {
+          totalCourses: courseCount[0].count,
+          activeDispatches: dispatchCount[0].count,
+          totalLaunches: totalLaunches,
+          completionRate: Math.round(completionRate * 10) / 10,
+        };
+      },
+      60 // 1 minute - dashboard stats change frequently
+    );
   }
 
   async getRecentDispatches(tenantId?: string, limit: number = 10): Promise<Dispatch[]> {

@@ -6,7 +6,9 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
+import RedisStore from "connect-redis";
 import { storage } from "./storage";
+import { getRedisClient, isRedisHealthy } from "./config/redis";
 
 // Check for required environment variables with graceful handling for production
 if (!process.env.REPLIT_DOMAINS) {
@@ -30,14 +32,35 @@ const getOidcConfig = memoize(
 );
 
 export function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
-    ttl: sessionTtl,
-    tableName: "sessions",
-  });
+  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week (in milliseconds)
+  const sessionTtlSeconds = 7 * 24 * 60 * 60; // 1 week (in seconds for Redis)
+  
+  let sessionStore;
+  
+  // Try to use Redis for session storage (preferred for production)
+  try {
+    const redisClient = getRedisClient();
+    
+    // Create Redis store
+    sessionStore = new RedisStore({
+      client: redisClient,
+      prefix: 'sess:',
+      ttl: sessionTtlSeconds,
+    });
+    
+    console.log('✅ Using Redis for session storage');
+  } catch (error) {
+    // Fallback to PostgreSQL if Redis is unavailable
+    console.warn('⚠️ Redis unavailable for sessions, falling back to PostgreSQL');
+    const pgStore = connectPg(session);
+    sessionStore = new pgStore({
+      conString: process.env.DATABASE_URL,
+      createTableIfMissing: false,
+      ttl: sessionTtl,
+      tableName: "sessions",
+    });
+  }
+  
   // Validate SESSION_SECRET with fallback for development
   const sessionSecret = process.env.SESSION_SECRET;
   if (!sessionSecret) {

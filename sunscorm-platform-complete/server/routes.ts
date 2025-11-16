@@ -10,6 +10,7 @@ import { registerLaunchRoutes } from "./routes/launch";
 import { registerCourseRoutes } from "./routes/courses";
 import { registerDispatchRoutes } from "./routes/dispatches";
 import { registerUploadRoutes } from "./routes/upload";
+import { registerAdminRoutes } from "./routes/admin";
 
 /**
  * CLEANED UP ROUTES.TS - SCORM PIPELINE HARDENING
@@ -108,6 +109,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerCourseRoutes(app);
   registerDispatchRoutes(app);
   registerUploadRoutes(app);
+  registerAdminRoutes(app);
 
   // Complete system health monitoring
   app.get('/api/system/health', async (req, res) => {

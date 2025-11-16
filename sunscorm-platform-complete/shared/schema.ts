@@ -63,6 +63,8 @@ export const courses = pgTable("courses", {
   structure: jsonb("structure").notNull(), // Course structure from manifest
   scormType: varchar("scorm_type").notNull(), // "scorm_1_2", "scorm_2004", "aicc", "xapi"
   tags: text("tags").array(), // Course tags for filtering and categorization
+  storageKey: text("storage_key"), // CDN storage key/path for the course package
+  cdnEnabled: boolean("cdn_enabled").notNull().default(false), // Whether CDN is enabled for this course
   isDisabled: boolean("is_disabled").notNull().default(false),
   deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow(),

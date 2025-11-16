@@ -161,10 +161,10 @@ export class CacheService {
       const testValue = { timestamp: Date.now() };
       
       await this.set(testKey, testValue, 10);
-      const retrieved = await this.get(testKey);
+      const retrieved = await this.get<{ timestamp: number }>(testKey);
       await this.delete(testKey);
       
-      return retrieved !== null && retrieved.timestamp === testValue.timestamp;
+      return retrieved !== null && typeof retrieved === 'object' && 'timestamp' in retrieved && retrieved.timestamp === testValue.timestamp;
     } catch (error) {
       console.error('Cache read/write test failed:', error);
       return false;

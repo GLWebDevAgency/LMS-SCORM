@@ -14,7 +14,7 @@ export interface CdnPurgeOptions {
   keys?: string[];
   /** Course ID to purge all assets for */
   courseId?: string;
-  /** Pattern-based purging (e.g., 'courses/*/index.html') */
+  /** Pattern-based purging (e.g., 'courses/WILDCARD/index.html') */
   pattern?: string;
 }
 
@@ -189,7 +189,7 @@ export class CdnService {
   
   /**
    * Get storage keys matching a pattern
-   * @param pattern - Pattern to match (e.g., 'courses/*/index.html')
+   * @param pattern - Pattern to match (e.g., 'courses/WILDCARD/index.html')
    * @returns Array of matching storage keys
    */
   private async getKeysByPattern(pattern: string): Promise<string[]> {

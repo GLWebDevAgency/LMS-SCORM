@@ -8,6 +8,8 @@ import { moveToStorage, cleanupTempFile } from "../storageService";
 import { csrfProtection } from "../csrfProtection";
 import multer from "multer";
 import { findSCORMEntryPoint, generateSCORMLaunchHTML, getSCORMManifest } from "../services/scormService";
+import { assetService } from "../services/assetService";
+import { StorageFactory } from "../services/storage/StorageFactory";
 // Removed client-side import - not needed in server routes
 
 const upload = multer({ 
@@ -124,16 +126,13 @@ export function registerCourseRoutes(app: Express): void {
         console.warn('Failed to parse SCORM manifest, using defaults:', error);
       }
 
-      // Move file to persistent storage
-      const storagePath = await moveToStorage(req.file, 'courses');
-
       // Parse tags
       const tags = req.body.tags ? 
         req.body.tags.split(',').map((tag: string) => tag.trim().toLowerCase()).filter(Boolean) : 
         [];
 
-      // Create course record with enhanced metadata
-      const courseData = {
+      // Create course record first to get courseId
+      const courseData: any = {
         title: req.body.title || scormManifest?.title || req.file.originalname,
         description: req.body.description || scormManifest?.description || '',
         version: req.body.version || '1.0',
@@ -141,18 +140,83 @@ export function registerCourseRoutes(app: Express): void {
         tags,
         fileName: req.file.originalname,
         fileSize: req.file.size,
-        storagePath,
+        storagePath: '', // Will be set after upload
         createdBy: req.user.claims.sub,
         isDisabled: false
       };
 
-      const course = await storage.createCourse(courseData);
+      // Determine storage provider
+      const storageAdapter = await StorageFactory.getAdapter();
+      const useCdn = storageAdapter.cdnEnabled;
 
-      // Cleanup temp file
-      await cleanupTempFile(req.file.path);
-
-      console.log(`Course uploaded successfully: ${course.id}`);
-      res.json(course);
+      if (useCdn) {
+        // CDN-enabled flow: Upload to CDN first
+        console.log(`Uploading course to CDN (${storageAdapter.type})`);
+        
+        // Create temporary course record to get ID
+        courseData.storagePath = '/tmp/pending'; // Placeholder
+        const tempCourse = await storage.createCourse(courseData);
+        
+        try {
+          // Upload to CDN
+          const uploadResult = await assetService.uploadCoursePackage(
+            req.file.path,
+            tempCourse.id,
+            {
+              fileName: req.file.originalname,
+              metadata: {
+                title: courseData.title,
+                scormType: courseData.scormType,
+              }
+            }
+          );
+          
+          // Update course with CDN information
+          await storage.updateCourse(tempCourse.id, {
+            storagePath: uploadResult.cdnUrl,
+            storageKey: uploadResult.storageKey,
+            cdnEnabled: true,
+          });
+          
+          console.log(`✓ Course uploaded to CDN: ${tempCourse.id}`);
+          
+          // Fetch updated course
+          const course = await storage.getCourse(tempCourse.id);
+          
+          // Cleanup temp file
+          await cleanupTempFile(req.file.path);
+          
+          res.json(course);
+        } catch (cdnError) {
+          console.error('CDN upload failed, falling back to local storage:', cdnError);
+          
+          // Fallback to local storage
+          const storagePath = await moveToStorage(req.file, 'courses');
+          await storage.updateCourse(tempCourse.id, {
+            storagePath,
+            cdnEnabled: false,
+          });
+          
+          // Cleanup temp file
+          await cleanupTempFile(req.file.path);
+          
+          const course = await storage.getCourse(tempCourse.id);
+          res.json(course);
+        }
+      } else {
+        // Local storage flow (existing behavior)
+        const storagePath = await moveToStorage(req.file, 'courses');
+        courseData.storagePath = storagePath;
+        courseData.cdnEnabled = false;
+        
+        const course = await storage.createCourse(courseData);
+        
+        // Cleanup temp file
+        await cleanupTempFile(req.file.path);
+        
+        console.log(`Course uploaded successfully (local): ${course.id}`);
+        res.json(course);
+      }
 
     } catch (error) {
       console.error("Course upload error:", error);
@@ -251,9 +315,14 @@ export function registerCourseRoutes(app: Express): void {
       }
 
       const courseId = req.params.id;
+      const course = await storage.getCourse(courseId);
+      
+      if (!course) {
+        return res.status(404).json({ message: "Course not found" });
+      }
       
       // Check if course has active dispatches
-      const dispatches = await storage.getDispatchesByCourse(courseId);
+      const dispatches = await storage.getDispatches(undefined, true, courseId);
       const activeDispatches = dispatches.filter(d => !d.isDisabled);
       
       if (activeDispatches.length > 0) {
@@ -261,6 +330,17 @@ export function registerCourseRoutes(app: Express): void {
           message: `Cannot delete course with ${activeDispatches.length} active dispatch(es). Please disable dispatches first.`,
           activeDispatches: activeDispatches.length
         });
+      }
+
+      // Cleanup CDN assets if CDN is enabled
+      if ((course as any).cdnEnabled && (course as any).storageKey) {
+        try {
+          await assetService.deleteCourseAssets(courseId, (course as any).storageKey);
+          console.log(`✓ Cleaned up CDN assets for course ${courseId}`);
+        } catch (error) {
+          console.error(`Failed to cleanup CDN assets for course ${courseId}:`, error);
+          // Continue with soft delete even if CDN cleanup fails
+        }
       }
 
       // Soft delete the course

@@ -147,6 +147,44 @@ PUBLIC_DOMAIN=https://your-domain.replit.app
 - **Professional UI**: Enhanced course management and dispatch interface
 - **License Enforcement**: Hierarchical completion limits and controls
 
+## 🧪 Testing
+
+### Test Infrastructure
+- **Unit Tests**: Vitest for component and service testing
+- **Integration Tests**: Full workflow testing with test database
+- **E2E Tests**: Playwright for end-to-end user journey testing
+- **Coverage**: 80%+ target with V8 coverage reporting
+
+### Running Tests
+```bash
+# Run all tests
+npm test
+
+# Run unit tests with coverage
+npm run test:unit
+
+# Run integration tests
+npm run test:integration
+
+# Run E2E tests
+npm run test:e2e
+
+# Watch mode for development
+npm run test:watch
+
+# Coverage report
+npm run test:coverage
+```
+
+### CI/CD Pipeline
+- Automated testing on all PRs and pushes
+- Type checking with TypeScript
+- Coverage threshold enforcement (80%)
+- Build verification before deployment
+- E2E tests on main/develop branches
+
+See [TESTING.md](TESTING.md) for comprehensive testing documentation.
+
 ## 📖 Documentation
 
 - `COMPREHENSIVE_SCORM_AUDIT_PHASE1.md` - Complete system architecture analysis

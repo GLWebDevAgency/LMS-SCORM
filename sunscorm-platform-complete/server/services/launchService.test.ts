@@ -8,21 +8,26 @@ import path from 'path';
 import { generateLaunchFile } from './launchService';
 
 describe('launchService', () => {
-  const testLaunchLinksDir = path.join('/tmp', 'test-launch-links');
+  const testLaunchLinksDir = path.join('/tmp', 'uploads', 'launch_links');
 
   beforeEach(() => {
-    // Create test directory
+    // Create test directory structure
+    const uploadsDir = path.join('/tmp', 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
     if (!fs.existsSync(testLaunchLinksDir)) {
       fs.mkdirSync(testLaunchLinksDir, { recursive: true });
     }
-    // Mock the uploads directory
+    // Mock the uploads directory to point to /tmp
     vi.spyOn(process, 'cwd').mockReturnValue('/tmp');
   });
 
   afterEach(() => {
     // Clean up test files
-    if (fs.existsSync(testLaunchLinksDir)) {
-      fs.rmSync(testLaunchLinksDir, { recursive: true, force: true });
+    const uploadsDir = path.join('/tmp', 'uploads');
+    if (fs.existsSync(uploadsDir)) {
+      fs.rmSync(uploadsDir, { recursive: true, force: true });
     }
     vi.restoreAllMocks();
   });

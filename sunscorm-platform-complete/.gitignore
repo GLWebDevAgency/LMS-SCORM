@@ -5,3 +5,14 @@ server/public
 vite.config.ts.*
 *.tar.gz
 uploads/
+
+# Test artifacts
+coverage/
+.vitest/
+playwright-report/
+test-results/
+playwright/.cache/
+*.log
+
+# Test environment
+.env.test.local

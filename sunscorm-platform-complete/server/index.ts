@@ -6,6 +6,10 @@ import { setupVite, serveStatic, log } from "./vite";
 import { config } from 'dotenv';
 config();
 
+// Import security middlewares
+import { securityHeaders, additionalSecurity, sanitizeInput } from "./middleware/security";
+import { standardLimiter, speedLimiter } from "./middleware/rateLimiter";
+
 // Validate critical environment variables for production deployment
 function validateEnvironment() {
   const requiredEnvVars = {
@@ -47,6 +51,17 @@ const app = express();
 
 // Enhanced configuration for production deployment
 app.set('trust proxy', true);
+
+// Security middlewares - applied first
+app.use(securityHeaders);
+app.use(additionalSecurity());
+
+// Rate limiting - protect against abuse
+app.use(standardLimiter);
+app.use(speedLimiter);
+
+// Input sanitization
+app.use(sanitizeInput());
 
 // Increase payload limits for large SCORM file uploads (512MB)
 // Also configure timeouts and connection handling

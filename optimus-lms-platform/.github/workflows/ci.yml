@@ -1,0 +1,167 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+          cache-dependency-path: optimus-lms-platform/pnpm-lock.yaml
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+      
+      - name: Install dependencies
+        working-directory: optimus-lms-platform
+        run: pnpm install --frozen-lockfile
+      
+      - name: Type check
+        working-directory: optimus-lms-platform
+        run: pnpm run check
+      
+      - name: Run unit tests
+        working-directory: optimus-lms-platform
+        run: pnpm run test:unit
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+          NODE_ENV: test
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./optimus-lms-platform/coverage/coverage-final.json
+          flags: unittests
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+      
+      - name: Check coverage threshold
+        working-directory: optimus-lms-platform
+        run: pnpm run test:coverage-check
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+          NODE_ENV: test
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+          cache-dependency-path: optimus-lms-platform/pnpm-lock.yaml
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+      
+      - name: Install dependencies
+        working-directory: optimus-lms-platform
+        run: pnpm install --frozen-lockfile
+      
+      - name: Build application
+        working-directory: optimus-lms-platform
+        run: pnpm run build
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: optimus-lms-platform/dist/
+          retention-days: 7
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+          cache-dependency-path: optimus-lms-platform/pnpm-lock.yaml
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+      
+      - name: Install dependencies
+        working-directory: optimus-lms-platform
+        run: pnpm install --frozen-lockfile
+      
+      - name: Install Playwright browsers
+        working-directory: optimus-lms-platform
+        run: pnpm exec playwright install --with-deps chromium
+      
+      - name: Run E2E tests
+        working-directory: optimus-lms-platform
+        run: pnpm run test:e2e
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+          NODE_ENV: test
+          BASE_URL: http://localhost:5000
+      
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: optimus-lms-platform/playwright-report/
+          retention-days: 7

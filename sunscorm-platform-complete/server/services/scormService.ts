@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import yauzl from "yauzl";
 import { promisify } from "util";
+import { cacheService } from "./cacheService";
 
 /**
  * Universal SCORM service for ZIP handling, entry point detection, and content serving
@@ -224,21 +225,41 @@ export async function extractFileFromZip(zipPath: string, filePath: string): Pro
 }
 
 /**
- * Get SCORM manifest information
+ * Get SCORM manifest information with Redis caching
  */
 export async function getSCORMManifest(zipPath: string): Promise<SCORMManifest | null> {
-  const cacheKey = `${zipPath}-${fs.statSync(zipPath).mtime.getTime()}`;
-  let cacheEntry = zipCache.get(cacheKey);
+  const fileStats = fs.statSync(zipPath);
+  const fileName = path.basename(zipPath);
+  const redisCacheKey = `scorm:manifest:${fileName}:${fileStats.mtime.getTime()}`;
+  
+  // Try Redis cache first (persistent across app restarts)
+  const cachedManifest = await cacheService.get<SCORMManifest>(redisCacheKey);
+  if (cachedManifest) {
+    return cachedManifest;
+  }
+  
+  // Fall back to in-memory cache
+  const memoryCacheKey = `${zipPath}-${fileStats.mtime.getTime()}`;
+  let cacheEntry = zipCache.get(memoryCacheKey);
   
   if (!cacheEntry) {
     cleanCache();
     cacheEntry = await extractZipToCache(zipPath);
-    zipCache.set(cacheKey, cacheEntry);
+    zipCache.set(memoryCacheKey, cacheEntry);
   } else {
     cacheEntry.lastAccessed = new Date();
   }
   
-  return cacheEntry.manifest || null;
+  const manifest = cacheEntry.manifest || null;
+  
+  // Store in Redis for persistence (fire and forget)
+  if (manifest) {
+    cacheService.set(redisCacheKey, manifest, 3600).catch((err) => {
+      console.error('Failed to cache SCORM manifest in Redis:', err);
+    });
+  }
+  
+  return manifest;
 }
 
 /**

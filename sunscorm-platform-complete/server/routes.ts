@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import { csrfProtection, getCSRFToken } from "./csrfProtection";
+import { cacheService } from "./services/cacheService";
 
 // Import modular route handlers
 import { registerLaunchRoutes } from "./routes/launch";
@@ -30,6 +31,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
       timestamp: new Date().toISOString(),
       uptime: process.uptime()
     });
+  });
+
+  // Detailed health check endpoint (no auth required)
+  app.get('/health/detailed', async (req, res) => {
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {
+        database: { status: 'unknown', responseTime: 0 },
+        redis: { status: 'unknown' },
+        cache: { status: 'unknown' },
+      }
+    };
+
+    try {
+      // Check database
+      const dbStart = Date.now();
+      await storage.getSystemHealth();
+      const dbResponseTime = Date.now() - dbStart;
+      health.services.database = { status: 'healthy', responseTime: dbResponseTime };
+    } catch (error) {
+      health.services.database = { status: 'unhealthy', responseTime: 0 };
+      health.status = 'degraded';
+    }
+
+    try {
+      // Check Redis
+      const redisHealthy = await cacheService.isHealthy();
+      health.services.redis = { status: redisHealthy ? 'healthy' : 'unhealthy' };
+      
+      // Test cache read/write
+      const cacheWorking = await cacheService.testReadWrite();
+      health.services.cache = { status: cacheWorking ? 'healthy' : 'unhealthy' };
+      
+      if (!redisHealthy || !cacheWorking) {
+        health.status = 'degraded';
+      }
+    } catch (error) {
+      health.services.redis = { status: 'unhealthy' };
+      health.services.cache = { status: 'unhealthy' };
+      health.status = 'degraded';
+    }
+
+    const statusCode = health.status === 'healthy' ? 200 : 503;
+    res.status(statusCode).json(health);
   });
 
   // Auth middleware
@@ -252,6 +299,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching standards distribution:", error);
       res.status(500).json({ message: "Failed to fetch standards distribution" });
+    }
+  });
+
+  // Admin cache management endpoints
+  app.get('/api/admin/cache/stats', isAuthenticated, async (req: any, res) => {
+    try {
+      const currentUser = await storage.getUser(req.user.claims.sub);
+      if (currentUser?.role !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const stats = await cacheService.getStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching cache stats:", error);
+      res.status(500).json({ message: "Failed to fetch cache stats" });
+    }
+  });
+
+  app.post('/api/admin/cache/clear', isAuthenticated, async (req: any, res) => {
+    try {
+      const currentUser = await storage.getUser(req.user.claims.sub);
+      if (currentUser?.role !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const { pattern } = req.body;
+      let deletedCount = 0;
+
+      if (pattern) {
+        // Clear specific pattern
+        deletedCount = await cacheService.deletePattern(pattern);
+        console.log(`Admin cache clear: pattern="${pattern}", deleted=${deletedCount} keys`);
+      } else {
+        // Clear all cache
+        await cacheService.flush();
+        console.log('Admin cache clear: flushed all cache');
+      }
+
+      res.json({ 
+        success: true, 
+        message: pattern ? `Cleared ${deletedCount} cache entries` : 'All cache cleared',
+        deletedCount: pattern ? deletedCount : undefined
+      });
+    } catch (error) {
+      console.error("Error clearing cache:", error);
+      res.status(500).json({ message: "Failed to clear cache" });
     }
   });
 
